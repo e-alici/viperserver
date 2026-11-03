@@ -123,6 +123,10 @@ trait VerificationServer extends Post {
                 /** FIXME: if the job actors are meant to be reused from one phase to another (only partially implemented),
                   * FIXME: then they should be stopped only after the **last** job is completed in the pipeline. */
                 job_actor ! PoisonPill
+                /** Once a verification job has completed, the AST construction job it was based on is no longer
+                  * needed. Release it, since AST jobs are booked with `discardOnCompletion = false` and would
+                  * otherwise keep their slot and, through their job actor, the constructed AST forever. */
+                prev_job_id_maybe.foreach(releaseAstJob)
             }
           })
 
@@ -170,6 +174,18 @@ trait VerificationServer extends Post {
 
   protected def discardAstJob(jid: AstJobId): Unit = {
     ast_jobs.discardJob(jid)
+  }
+
+  /** Frees the slot of an AST construction job and, once its message stream has completed, stops its job actor,
+    * which holds the constructed AST. Same steps as `discardAstJobLookup` in the LSP frontend's
+    * `ViperServerService`. Does nothing if the job has already been discarded. */
+  protected def releaseAstJob(jid: AstJobId): Unit = {
+    ast_jobs.lookupJob(jid).foreach { job =>
+      ast_jobs.discardJob(jid)
+      job.foreach(astHandle => astHandle.queue.watchCompletion().onComplete(_ => {
+        astHandle.job_actor ! PoisonPill
+      }))
+    }
   }
 
   /** This method starts a verification process.
